@@ -100,6 +100,7 @@ void printCategories( category **list );
 
 
 
+size_t getTotalSystemMemory();
 
 
 

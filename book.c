@@ -23,6 +23,8 @@ int main ( int argc, char *argv[ ] )
 	/* Clears standard output */
 	system("clear");
 
+	printf("\nmem: %.2f gigs", (double)(getTotalSystemMemory())/1000000000);
+
 	/* Creates thread object and attributes */
 	pthread_attr_t attr;
  	pthread_t producerThread;
@@ -138,9 +140,9 @@ void * producerfnc( void *arg )
 		pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
 		insertOrder( o, threadData[o->cat_id]->orders );
 		threadData[o->cat_id]->curCount += 1;
-				pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
 
 		pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
+				pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
 
 		//printf("\nid2: %d", o->cat_id);
 	}
@@ -150,6 +152,7 @@ void * producerfnc( void *arg )
 	for( i = 0; i < data->catCount; i++ )
 	{
 		printf("\nProducer Thread Joined With Thread %d", (i+1) );
+		threadData[i]->isopen = 0;
 		pthread_join( consumerThread[i], NULL );
 	}
 
@@ -501,4 +504,11 @@ int getThreadCount( char *categoryFile)
 		return ( count );
 	else
 		return 0;
+}
+
+size_t getTotalSystemMemory()
+{
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    return pages * page_size;
 }
