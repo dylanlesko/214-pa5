@@ -31,8 +31,8 @@ typedef struct customer
 
 	pthread_mutex_t 	customerLock;
 
-	struct order 		*successful_orders;
-	struct order 		*failed_orders;
+	struct order 		**successful_orders;
+	struct order 		**failed_orders;
 
 	struct customer 	*next;
 } customer;
@@ -80,6 +80,7 @@ void * consumerfnc( void *arg );
 
 int getCat_id( char *category, struct category **categories );
 int getThreadCount( char *categoryFile);
+customer* getCustomer( int id, customer **customerList );
 
 struct order** order_init( );
 struct threadShared** threadShared_init( );
@@ -97,6 +98,7 @@ int insertCategory( category *newCat, category **list );
 void printCustomers( customer **list );
 void printCategories( category **list );
 
+void printOrders( order **orderList);
 
 
 

@@ -79,10 +79,6 @@ void * producerfnc( void *arg )
 	pthread_attr_init(&attr);
 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
-	//printCustomers(data->customerList);
-	//printCategories(data->categoryList);
-	//printf("\nthreads to make: %d", data->catCount);
-
 	int i = 0;
 	for( i = 0; i < data->catCount; i++ )
 	{
@@ -100,12 +96,17 @@ void * producerfnc( void *arg )
 		pthread_create( &consumerThread[i], &attr, consumerfnc, (void *)threadData[i] );
 	}
 
-
-
 	FILE *fp = fopen( data->orderFile, "r" );
 	char line[2048];
 	char buffer[2048];
 	order *o;
+
+	/* Checks to see if the file is valid, exits program is it cannot be read */
+	if ( fp == NULL )
+	{
+		fprintf(stderr, "\nCustomer file not found\n\n");
+		exit(1);
+	}
 
 	pthread_detach( pthread_self() );
 	while (fgets(line, 2048, fp))
@@ -127,35 +128,37 @@ void * producerfnc( void *arg )
 		o->isProcessed = 0;
 
 		o->cat_id = getCat_id( o->category, data->categoryList );
-		printf("\norder: %s", o->title);
+		//printf("\norder: %s", o->title);
+		
+		pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
 
 		while( threadData[o->cat_id]->curCount == threadData[o->cat_id]->queueMax )
 		{
-			printf("\nProducer Waiting");
+			//printf("\nProducer Waiting");
 			pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
 			pthread_cond_wait( &threadData[o->cat_id]->emptySignal, &threadData[o->cat_id]->orderLock );
-			sleep (1);
 		}
-		//sleep (1);
-		pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
+
 		insertOrder( o, threadData[o->cat_id]->orders );
 		threadData[o->cat_id]->curCount += 1;
-
+		
 		pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
-				pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
+		pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
 
-		//printf("\nid2: %d", o->cat_id);
+
 	}
 
 	FCLOSE(fp);
 
 	for( i = 0; i < data->catCount; i++ )
 	{
-		printf("\nProducer Thread Joined With Thread %d", (i+1) );
+		//printf("\nProducer Thread Joined With Thread %d", (i+1) );
+		//printOrders( threadData[i]->orders);
+		//printf("\ncurcount: %d", threadData[i]->curCount );
+		//printf("\n");
 		threadData[i]->isopen = 0;
 		pthread_join( consumerThread[i], NULL );
 	}
-
 }
 
 /*
@@ -165,40 +168,59 @@ void * consumerfnc( void *arg )
 {
 	threadShared *test = (threadShared*)arg;
 	order **queue = test->orders;
+	customer **customerList = test->customerList;
+	order *currentOrder = (*queue);
 
 	pthread_detach( pthread_self() );
-	while ( test->isopen == 1 )
+
+	while ( (test)->isopen == 1 || currentOrder != NULL )
 	{
 		pthread_mutex_lock( &test->orderLock );
 
-		while( test->curCount == 0 )
+		while(test->curCount == 0 )
 		{
+
+		
+			//printf("\nconsumer waiting");
 			pthread_cond_signal( &test->emptySignal );
-
 			pthread_cond_wait( &test->fullSignal, &test->orderLock );
-
-			if( (*queue) == NULL )
-			{
-				printf("\nnull");
-			}
-			else
-			{
-				printf("\n%s\tConsumer Waiting", (*queue)->category);
-			}
-		sleep (1);
+		
 		}
-		
+		if(test->curCount > 0)
+		{
+			if(currentOrder == NULL)
+			{
+				currentOrder = *test->orders;
+				//printf("\nif");
+			}
+			while(currentOrder != NULL)
+			{
+				if(currentOrder->next != NULL)
+				{
+					if( currentOrder->isProcessed == 0)
+					{
+						//printf("\ncount: %d", test->curCount);
+						printf("\ncat: %s", currentOrder->title);
+						currentOrder->isProcessed = 1;
+						test->curCount -= 1;
+					}
+					currentOrder = currentOrder->next;
+				}
+				else
+				{
+					break;
 
-			test->curCount -= 1;
-		
-		pthread_cond_signal( &test->emptySignal );
+				}
+
+			}
+		}
+
+		//sleep(1);
 		pthread_mutex_unlock( &test->orderLock );
+		pthread_cond_signal( &test->emptySignal );
+
 
 	}
-
-
-
-	//printf("\nconsumer: %d", (*queue)->cat_id );
 }
 
 /*
@@ -457,6 +479,25 @@ void printCategories( category **list )
 	printCategories( &((*list)->next) );
 }
 
+void printOrders( order **orderList)
+{
+	/* checks if the passed paramenter is the end of the list */
+	if( (*orderList) == NULL )
+	{
+		return;
+	}
+
+	printf(MAKE_BLUE"\ntitle: %s", (*orderList)->title );
+	printf("\n\tid: %d", (*orderList)->customer_id);
+	printf("\n\tprice: %f", (*orderList)->price);
+	printf("\n\tbal: %f", (*orderList)->remaining_balance);
+	printf("\n\tprocessed: %d"RESET_FORMAT, (*orderList)->isProcessed);
+
+	/* recursively pass the pointer to the next object in the list */	
+	printOrders( &((*orderList)->next) );
+
+}
+
 /* 
 *	getCat_id	function for getting the id of a cetegory
 *
@@ -504,6 +545,22 @@ int getThreadCount( char *categoryFile)
 		return ( count );
 	else
 		return 0;
+}
+
+customer* getCustomer( int id, customer **customerList )
+{
+	if ( (*customerList) == NULL )
+	{
+		return NULL;
+	}
+	if( (*customerList)->id == id )
+	{
+		return (*customerList);
+	}
+	else
+	{
+		getCustomer( id, &((*customerList)->next) );
+	}
 }
 
 size_t getTotalSystemMemory()
