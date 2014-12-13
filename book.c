@@ -61,8 +61,7 @@ int main ( int argc, char *argv[ ] )
 	pthread_create( &producerThread, &attr, producerfnc, (void *) data );
 	pthread_join( producerThread, NULL );
 
-	/* Flush printf yo */
-	printf("\n\n");
+
 }
 
 /*
@@ -108,7 +107,7 @@ void * producerfnc( void *arg )
 		exit(1);
 	}
 
-	pthread_detach( pthread_self() );
+	//pthread_detach( pthread_self() );
 	while (fgets(line, 2048, fp))
 	{
 		o = (order*)malloc(sizeof(order));
@@ -159,6 +158,9 @@ void * producerfnc( void *arg )
 		threadData[i]->isopen = 0;
 		pthread_join( consumerThread[i], NULL );
 	}
+
+
+
 }
 
 /*
@@ -170,17 +172,15 @@ void * consumerfnc( void *arg )
 	order **queue = test->orders;
 	customer **customerList = test->customerList;
 	order *currentOrder = (*queue);
+	customer *temp;
 
 	pthread_detach( pthread_self() );
-
 	while ( (test)->isopen == 1 || currentOrder != NULL )
 	{
 		pthread_mutex_lock( &test->orderLock );
 
 		while(test->curCount == 0 )
 		{
-
-		
 			//printf("\nconsumer waiting");
 			pthread_cond_signal( &test->emptySignal );
 			pthread_cond_wait( &test->fullSignal, &test->orderLock );
@@ -200,14 +200,32 @@ void * consumerfnc( void *arg )
 					if( currentOrder->isProcessed == 0)
 					{
 						//printf("\ncount: %d", test->curCount);
-						printf("\ncat: %s", currentOrder->title);
+						temp = getCustomer( currentOrder->customer_id, customerList);
+						pthread_mutex_lock( &temp->customerLock );
+						printf(MAKE_RED"\ncat: %s", currentOrder->title);
+						printf(MAKE_BLUE"\n\tneeds: %.2f", currentOrder->price);
+						printf(MAKE_GREEN"\n\thas: %.2f"RESET_FORMAT, temp->balance);
 						currentOrder->isProcessed = 1;
 						test->curCount -= 1;
+						pthread_mutex_unlock( &temp->customerLock  );
 					}
 					currentOrder = currentOrder->next;
 				}
 				else
 				{
+
+					//if( (test)->isopen == 1)
+					if( test->curCount > 0 )
+					{
+						temp = getCustomer( currentOrder->customer_id, customerList);
+						pthread_mutex_lock( &temp->customerLock );
+						printf(MAKE_RED"\ncat: %s", currentOrder->title);
+						printf(MAKE_BLUE"\n\tneeds: %.2f", currentOrder->price);
+						printf(MAKE_GREEN"\n\thas: %.2f"RESET_FORMAT, temp->balance);
+						currentOrder->isProcessed = 1;
+						test->curCount -= 1;
+						pthread_mutex_unlock( &temp->customerLock  );
+					}
 					break;
 
 				}
