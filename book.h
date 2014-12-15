@@ -54,23 +54,29 @@ typedef struct shared
 	char 				*custFile;
 	char 				*orderFile;
 	char 				*catFile;
-	int 				catCount;
+
 
 } shared;
 
 /* struct to pass necesarry data to consumer threads*/
 typedef struct threadShared
 {
-	int 				isopen;							/* 1 for open; 0 for closed */
-	int 				queueMax;
+	int 				*isopen;							/* 1 for open; 0 for closed */
+	int 				isdone;
+	int 				*queueMax;
 	int  				curCount;
-	struct order 		**orders;
-	struct customer 	**customerList;		
+	int 				*custCount;
+	int 				id;
 
-	pthread_cond_t 		emptySignal;
-	pthread_cond_t 		fullSignal;
+	struct order 		**orderList;
+	struct customer 	**customerList;	
 
-	pthread_mutex_t 	orderLock;		
+	pthread_cond_t 		spaceAvailable;
+	pthread_cond_t 		dataAvailable;
+
+	pthread_cond_t		started;
+
+	pthread_mutex_t 	orderLock;
 } threadShared;
 
 
@@ -79,17 +85,20 @@ void * consumerfnc( void *arg );
 
 
 int getCat_id( char *category, struct category **categories );
+int get_customerCount( customer **customerList );
+
 int getThreadCount( char *categoryFile);
 customer* getCustomer( int id, customer **customerList );
 
 struct order** order_init( );
-struct threadShared** threadShared_init( );
+struct threadShared* threadShared_init( int id  );
 struct shared* shared_init( );
 struct customer** customerList_init();
 struct category** categoryList_init( );
 
 void customerList_fill( struct customer **customerList, char *custFile);
 void categoryList_fill( struct category **categoryList, char *catFile );
+struct order* order_format( char* line );
 
 int insertOrder( order *newOrder, order **orderList);
 int insertCustomer( customer *newCust, customer **list );
@@ -101,10 +110,11 @@ void printCategories( category **list );
 void printOrders( order **orderList);
 
 
+int checkJoined( int tests[] );
 
-size_t getTotalSystemMemory();
 
 
+int countCustomers( customer **list );
 
 
 #endif

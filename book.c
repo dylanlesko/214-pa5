@@ -4,6 +4,13 @@
 #define TRUE		1
 #define MAXSIZE		5
 
+pthread_mutex_t 	printLock 		= PTHREAD_MUTEX_INITIALIZER;		/* lock for printf, don't think they are sigsafe */
+pthread_mutex_t 	openLock 		= PTHREAD_MUTEX_INITIALIZER;		/* lock for printf, don't think they are sigsafe */
+int 				file_open 		= 	FALSE;							/* 1 for open; 0 for close */
+int 				max 			= 	MAXSIZE;						/* Max size of the queue */
+int 				custCount 		= 	0;								/* amount of customers, calculated in producerfnc */
+int 				catCount		=	0;								/* amount of categories, calculated in main*/
+
 
 /*
  *	argv1	=	customer input file 
@@ -23,15 +30,10 @@ int main ( int argc, char *argv[ ] )
 	/* Clears standard output */
 	system("clear");
 
-	printf("\nmem: %.2f gigs", (double)(getTotalSystemMemory())/1000000000);
-
 	/* Creates thread object and attributes */
-	pthread_attr_t attr;
  	pthread_t producerThread;
 
-	/* For portability, explicitly create threads in a joinable state */
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+	//pthread_mutex_init( &printLock , 0 );
 
 	/* Declare and initialize customer list */
 	customer **customerList = customerList_init();
@@ -43,10 +45,8 @@ int main ( int argc, char *argv[ ] )
 	categoryList_fill( categoryList, argv[3]);
 	//printCategories( categoryList );
 
-	shared **test = malloc(sizeof(shared));
-
 	/* Declare and Initialize shared data struct */
-	shared *data = shared_init();
+	shared *data = shared_init( );
 	data->custFile = (char*)malloc(strlen(argv[1]) + 1);
 		strcpy( data->custFile, argv[1] );
 	data->orderFile = (char*)malloc(strlen(argv[2]) + 1);
@@ -55,13 +55,13 @@ int main ( int argc, char *argv[ ] )
 		strcpy( data->catFile, argv[3] );
 	data->customerList = customerList;
 	data->categoryList = categoryList;
-	data->catCount = getThreadCount( data->catFile );
+
+	catCount = getThreadCount( data->catFile );
+	custCount = get_customerCount( data->customerList );
 
 	/* Start the producer thread */
-	pthread_create( &producerThread, &attr, producerfnc, (void *) data );
+	pthread_create( &producerThread, 0, producerfnc, ( void * ) data );
 	pthread_join( producerThread, NULL );
-
-
 }
 
 /*
@@ -69,97 +69,141 @@ int main ( int argc, char *argv[ ] )
 */
 void * producerfnc( void *arg )
 {
-	shared *data = (shared*)arg;
-	pthread_t consumerThread[data->catCount];
-	threadShared *threadData[data->catCount];
-	pthread_attr_t attr;
+	shared 			*data 						= 	( shared* )arg;
+	pthread_t 		consumerThread[catCount];
+	threadShared 	*threadData[catCount];
+	int 			i 							=	0;
+	int 			j 							=	0;
+	FILE 			*fp 						= 	fopen( data->orderFile, "r" );
+	char 			line[2048]					=	"";
+	char 			buffer[2048]				=	"";
+	order 			*o 							=	NULL;
 
-	/* For portability, explicitly create threads in a joinable state */
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-	int i = 0;
-	for( i = 0; i < data->catCount; i++ )
+	/* creates consumer threads */
+	for( i = 0; i < catCount; i++ )
 	{
-		threadData[i] = (threadShared*)malloc(sizeof(threadShared));
-		threadData[i]->queueMax = MAXSIZE;
-		threadData[i]->curCount = 0;
-		threadData[i]->customerList = data->customerList;
-		threadData[i]->isopen = 1;
-		threadData[i]->orders = (order**)malloc(sizeof(order));
-
-		pthread_cond_init(&(threadData[i]->fullSignal), 0);
-		pthread_cond_init(&(threadData[i]->emptySignal), 0);
-		pthread_mutex_init( &threadData[i]->orderLock, 0 );
-
-		pthread_create( &consumerThread[i], &attr, consumerfnc, (void *)threadData[i] );
+		threadData[i] = threadShared_init( i + 1 );
+		pthread_create( &consumerThread[i], 0, consumerfnc, (void *)threadData[i] );
 	}
 
-	FILE *fp = fopen( data->orderFile, "r" );
-	char line[2048];
-	char buffer[2048];
-	order *o;
-
-	/* Checks to see if the file is valid, exits program is it cannot be read */
+	/* If the file is readable, set global file_open variable to true. otherwise exit the program */
 	if ( fp == NULL )
 	{
-		fprintf(stderr, "\nCustomer file not found\n\n");
+		fprintf(stderr, "\nOrder file could not be read.\n\n");
 		exit(1);
 	}
-
-	//pthread_detach( pthread_self() );
-	while (fgets(line, 2048, fp))
+	else
 	{
-		o = (order*)malloc(sizeof(order));
+		file_open = TRUE;
+	}
 
-		strcpy(buffer, strtok(line,"\""));
-		o->title = malloc(strlen(buffer) + 1);
-		strcpy(o->title, buffer);
-
-		o->price = atof(strtok(NULL, "|"));
-
-		o->customer_id = atoi(strtok(NULL, "|"));
-
-		strcpy(buffer, strtok(NULL, "\n"));
-		o->category = malloc(strlen(buffer) + 1);
-		strcpy(o->category, buffer);
-
-		o->isProcessed = 0;
-
+	/* 	Goes to the end of the orders file. 
+	*	Create a new struct for each order
+	*	wait if the order's category thread is full
+	*	insert the new order into the queue
+	*/
+	while ( fgets( line, 2048, fp ) )
+	{
+		o = order_format( line );
 		o->cat_id = getCat_id( o->category, data->categoryList );
-		//printf("\norder: %s", o->title);
 		
-		pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
-
-		while( threadData[o->cat_id]->curCount == threadData[o->cat_id]->queueMax )
+		//pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
+		pthread_mutex_lock(&threadData[o->cat_id]->orderLock);
 		{
-			//printf("\nProducer Waiting");
-			pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
-			pthread_cond_wait( &threadData[o->cat_id]->emptySignal, &threadData[o->cat_id]->orderLock );
+			while( threadData[o->cat_id]->curCount ==  max )
+			{
+				printf("\nProducer Waiting");
+				pthread_cond_signal( &threadData[o->cat_id]->dataAvailable );
+				pthread_cond_wait( &threadData[o->cat_id]->spaceAvailable, &threadData[o->cat_id]->orderLock );
+			}
+
+			insertOrder( o, threadData[o->cat_id]->orderList );
+			threadData[o->cat_id]->curCount += 1;
+			
+			pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
+			pthread_cond_signal( &threadData[o->cat_id]->dataAvailable );
 		}
 
-		insertOrder( o, threadData[o->cat_id]->orders );
-		threadData[o->cat_id]->curCount += 1;
-		
-		pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
-		pthread_cond_signal( &threadData[o->cat_id]->fullSignal );
-
-
 	}
+
+
+
 
 	FCLOSE(fp);
 
-	for( i = 0; i < data->catCount; i++ )
+	if(o == NULL)
 	{
-		//printf("\nProducer Thread Joined With Thread %d", (i+1) );
-		//printOrders( threadData[i]->orders);
-		//printf("\ncurcount: %d", threadData[i]->curCount );
-		//printf("\n");
-		threadData[i]->isopen = 0;
-		pthread_join( consumerThread[i], NULL );
+		printf("\nNo Orders Found\n\n");
+		end(1);
+	}
+	for( i = 0; i < catCount; i++ )
+	{		
+//		printOrders( threadData[i]->orderList );
+		if( *(threadData[i]->orderList) == NULL )
+		{
+			printf("\ntwo");
+			threadData[i]->isdone = TRUE;
+		}
+		else
+		{
+			pthread_mutex_lock( &openLock );
+			printf("\none");
+			pthread_cond_wait( &threadData[i]->started, &openLock );
+			pthread_mutex_unlock( &openLock );
+		}
+	}
+
+	file_open = FALSE;
+/*
+	int tests[ catCount ];
+
+	for( i = 0; i < catCount; i++ )
+	{
+		tests[i] = FALSE;
 	}
 
 
+	//while( checkJoined( tests ) == FALSE)
+	while(0)
+	{
+		//printf("\nwhile");
+		for( i = 0; i < catCount; i++)
+		{
+			pthread_cond_signal( &threadData[i]->dataAvailable);
+			if(tests[i] == FALSE)
+			{
+				if(pthread_mutex_trylock( &threadData[i]->orderLock ) == 0 )
+				{
+					if( (pthread_tryjoin_np( consumerThread[i], NULL) ) == 0 )
+					{
+						tests[i] = TRUE;
+					}
+					//pthread_cond_signal( &threadData[i]->dataAvailable );
+					pthread_mutex_unlock( &threadData[i]->orderLock );
+				}
+			}
+		}
+
+	}
+*/
+
+
+
+
+}
+
+int checkJoined( int tests[] )
+{
+	int i = 0;
+
+	for( i = 0; i < catCount; i++ )
+	{
+		if(tests[i] == FALSE)
+		{
+			return FALSE;
+		}
+	}
+	return TRUE;
 
 }
 
@@ -168,77 +212,43 @@ void * producerfnc( void *arg )
 */
 void * consumerfnc( void *arg )
 {
-	threadShared *test = (threadShared*)arg;
-	order **queue = test->orders;
-	customer **customerList = test->customerList;
-	order *currentOrder = (*queue);
-	customer *temp;
+	order 			*newOrder 			=	NULL;
+	customer 		*currentCustomer	=	NULL;
+	order 			*currentOrder		=	NULL;
+	threadShared 	*data 				= 	(threadShared*)arg;
+	order 			**orderList 		= 	data->orderList;
+	customer 		**customerList 		= 	data->customerList;
 
-	pthread_detach( pthread_self() );
-	while ( (test)->isopen == 1 || currentOrder != NULL )
+	while( *(data->isopen) == TRUE)
 	{
-		pthread_mutex_lock( &test->orderLock );
 
-		while(test->curCount == 0 )
+		currentOrder = *(data->orderList);
+		if( *(data->orderList) == NULL)
 		{
-			//printf("\nconsumer waiting");
-			pthread_cond_signal( &test->emptySignal );
-			pthread_cond_wait( &test->fullSignal, &test->orderLock );
-		
+			continue;
 		}
-		if(test->curCount > 0)
+		else
 		{
-			if(currentOrder == NULL)
+			pthread_cond_signal( &data->started );
+
+			while( currentOrder->next != NULL )
 			{
-				currentOrder = *test->orders;
-				//printf("\nif");
-			}
-			while(currentOrder != NULL)
-			{
-				if(currentOrder->next != NULL)
-				{
-					if( currentOrder->isProcessed == 0)
-					{
-						//printf("\ncount: %d", test->curCount);
-						temp = getCustomer( currentOrder->customer_id, customerList);
-						pthread_mutex_lock( &temp->customerLock );
-						printf(MAKE_RED"\ncat: %s", currentOrder->title);
-						printf(MAKE_BLUE"\n\tneeds: %.2f", currentOrder->price);
-						printf(MAKE_GREEN"\n\thas: %.2f"RESET_FORMAT, temp->balance);
-						currentOrder->isProcessed = 1;
-						test->curCount -= 1;
-						pthread_mutex_unlock( &temp->customerLock  );
-					}
-					currentOrder = currentOrder->next;
-				}
-				else
-				{
-
-					//if( (test)->isopen == 1)
-					if( test->curCount > 0 )
-					{
-						temp = getCustomer( currentOrder->customer_id, customerList);
-						pthread_mutex_lock( &temp->customerLock );
-						printf(MAKE_RED"\ncat: %s", currentOrder->title);
-						printf(MAKE_BLUE"\n\tneeds: %.2f", currentOrder->price);
-						printf(MAKE_GREEN"\n\thas: %.2f"RESET_FORMAT, temp->balance);
-						currentOrder->isProcessed = 1;
-						test->curCount -= 1;
-						pthread_mutex_unlock( &temp->customerLock  );
-					}
-					break;
-
-				}
-
+				newOrder = malloc(sizeof(order));
+				(*newOrder) = (*currentOrder);
+				currentOrder = currentOrder->next;
+				data->curCount--;
 			}
 		}
+	}
 
-		//sleep(1);
-		pthread_mutex_unlock( &test->orderLock );
-		pthread_cond_signal( &test->emptySignal );
 
+	//while( 1 )
+	{	
+		//printf("\ndsf");
 
 	}
+
+
 }
 
 /*
@@ -246,7 +256,7 @@ void * consumerfnc( void *arg )
 *
 *	returns a sharec struct with dynamically allocated memory
 */
-struct shared* shared_init( )
+struct shared* shared_init(  )
 {
 	shared *newShared = (shared*)malloc(sizeof(shared));
 
@@ -255,12 +265,33 @@ struct shared* shared_init( )
 
 struct order** order_init( )
 {
-	struct order **newQueue = (order**)malloc(sizeof(order));
+	struct order **newQueue = (order**)malloc(sizeof(order*));
+	(*newQueue) = NULL;
+
+	return newQueue;
 }
 
-struct threadShared** threadShared_init( )
+struct threadShared* threadShared_init( int id )
 {
+	threadShared *newShared = (threadShared*)malloc(sizeof(threadShared));
+	newShared->isopen = (int*)malloc(sizeof(int));
+		(newShared->isopen) = &file_open;
+	newShared->queueMax = (int*)malloc(sizeof(int));
+		(newShared->queueMax) = &max;
+	newShared->curCount = 0;
+	newShared->id = id;
+	//newShared->started	=	FALSE;
+	newShared->isdone	=	FALSE;
 
+	newShared->orderList = order_init( );
+	newShared->customerList = customerList_init( );
+
+	pthread_cond_init(&(newShared->dataAvailable), 0);
+	pthread_cond_init(&(newShared->spaceAvailable), 0);
+	pthread_cond_init(&(newShared->started), 0);
+	pthread_mutex_init( &newShared->orderLock, 0 );
+
+	return newShared;
 }
 
 /*
@@ -298,15 +329,17 @@ struct category** categoryList_init( )
 */
 void customerList_fill( struct customer **customerList, char *custFile )
 {
-	FILE 		*fp 			=	fopen(custFile, "r");
+	FILE 		*fp 			=	fopen( custFile, "r" );
 	char 		line[2048];
 	char		buffer[2048];
 	customer 	*c;
+	order 		**success 		=	NULL;
+	order 		**failure 		=	NULL;
 
 	/* Checks to see if the file is valid, exits program is it cannot be read */
 	if ( fp == NULL )
 	{
-		fprintf(stderr, "\nCustomer file not found\n\n");
+		fprintf(stderr, "\nDatabase file could not be read.\n\n");
 		exit(1);
 	}
 
@@ -335,6 +368,14 @@ void customerList_fill( struct customer **customerList, char *custFile )
 		c->zip = malloc(strlen(buffer) + 1);		// Malloc
 		strcpy(c->zip, buffer);
 
+		success = order_init( );
+		failure = order_init( );
+
+		c->successful_orders = success;
+		c->failed_orders = failure;
+
+		c->next = NULL;
+
 		insertCustomer( c, customerList );
 	}
 
@@ -360,7 +401,7 @@ void categoryList_fill( struct category **categoryList, char *catFile )
 	/* Checks to see if the file is valid, exits program is it cannot be read */
 	if ( fp == NULL )
 	{
-		fprintf(stderr, "\nCustomer file not found\n\n");
+		fprintf(stderr, "\nCategory could not be read.\n\n");
 		exit(1);
 	}
 
@@ -385,6 +426,32 @@ void categoryList_fill( struct category **categoryList, char *catFile )
 	/* Nulls temp struct and close file */
 	c= NULL;
 	FCLOSE(fp);
+}
+
+struct order* order_format( char* line)
+{
+	char 	buffer[2048]	=	"";
+	order*	newOrder		=	(order*)malloc(sizeof(order));
+
+	if(line == NULL)
+	{
+		return NULL;
+	}
+		strcpy(buffer, strtok(line,"\""));
+		newOrder->title = malloc(strlen(buffer) + 1);
+		strcpy(newOrder->title, buffer);
+
+		newOrder->price = atof(strtok(NULL, "|"));
+
+		newOrder->customer_id = atoi(strtok(NULL, "|"));
+
+		strcpy(buffer, strtok(NULL, "\n"));
+		newOrder->category = malloc(strlen(buffer) + 1);
+		strcpy(newOrder->category, buffer);
+
+		newOrder->isProcessed = FALSE;
+
+		return newOrder;
 }
 
 /*
@@ -438,6 +505,10 @@ int insertCategory( category *newCat, category **list)
 int insertOrder( order *newOrder, order **list)
 {
 
+	if(list == NULL)
+	{
+		return 0;
+	}
 	/* when the list is null, you reached the end. add the new struct to the list */
 	if( (*list) == NULL)
 	{
@@ -449,7 +520,8 @@ int insertOrder( order *newOrder, order **list)
 		/* recursively passes the pointer to the next object in the struct */
 		insertOrder( newOrder, &((*list)->next) );
 	}
-	return 0;}
+	return 0;
+}
 
 /*
 *	printCustomers	function that outputs all elements in a customerList to stdout
@@ -505,11 +577,11 @@ void printOrders( order **orderList)
 		return;
 	}
 
-	printf(MAKE_BLUE"\ntitle: %s", (*orderList)->title );
+	printf("\ntitle: %s", (*orderList)->title );
 	printf("\n\tid: %d", (*orderList)->customer_id);
 	printf("\n\tprice: %f", (*orderList)->price);
 	printf("\n\tbal: %f", (*orderList)->remaining_balance);
-	printf("\n\tprocessed: %d"RESET_FORMAT, (*orderList)->isProcessed);
+	printf("\n\tprocessed: %d", (*orderList)->isProcessed);
 
 	/* recursively pass the pointer to the next object in the list */	
 	printOrders( &((*orderList)->next) );
@@ -565,6 +637,21 @@ int getThreadCount( char *categoryFile)
 		return 0;
 }
 
+int get_customerCount( customer **customerList )
+{
+	int count = 0;
+
+	customer *p = (*customerList);
+
+	while( p != NULL )
+	{
+		count++;
+		p = p->next;
+	}
+
+	return count;
+}
+
 customer* getCustomer( int id, customer **customerList )
 {
 	if ( (*customerList) == NULL )
@@ -579,11 +666,4 @@ customer* getCustomer( int id, customer **customerList )
 	{
 		getCustomer( id, &((*customerList)->next) );
 	}
-}
-
-size_t getTotalSystemMemory()
-{
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    return pages * page_size;
 }
