@@ -62,11 +62,13 @@ typedef struct shared
 typedef struct threadShared
 {
 	int 				*isopen;							/* 1 for open; 0 for closed */
-	int 				isdone;
 	int 				*queueMax;
 	int  				curCount;
 	int 				*custCount;
 	int 				id;
+
+	int 				is_joined;
+	int 				is_started;
 
 	struct order 		**orderList;
 	struct customer 	**customerList;	
@@ -74,7 +76,6 @@ typedef struct threadShared
 	pthread_cond_t 		spaceAvailable;
 	pthread_cond_t 		dataAvailable;
 
-	pthread_cond_t		started;
 
 	pthread_mutex_t 	orderLock;
 } threadShared;
@@ -91,7 +92,7 @@ int getThreadCount( char *categoryFile);
 customer* getCustomer( int id, customer **customerList );
 
 struct order** order_init( );
-struct threadShared* threadShared_init( int id  );
+struct threadShared* threadShared_init( int id  , customer** customerList );
 struct shared* shared_init( );
 struct customer** customerList_init();
 struct category** categoryList_init( );
@@ -106,7 +107,7 @@ int insertCategory( category *newCat, category **list );
 
 void printCustomers( customer **list );
 void printCategories( category **list );
-
+void printReport( shared *data );
 void printOrders( order **orderList);
 
 

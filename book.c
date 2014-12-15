@@ -10,7 +10,7 @@ int 				file_open 		= 	FALSE;							/* 1 for open; 0 for close */
 int 				max 			= 	MAXSIZE;						/* Max size of the queue */
 int 				custCount 		= 	0;								/* amount of customers, calculated in producerfnc */
 int 				catCount		=	0;								/* amount of categories, calculated in main*/
-
+float 				totalRevenue	=	0.0;
 
 /*
  *	argv1	=	customer input file 
@@ -20,15 +20,16 @@ int 				catCount		=	0;								/* amount of categories, calculated in main*/
  */
 int main ( int argc, char *argv[ ] )
 {
+	system("clear");
+
 	/* checks argument count */
 	if (argc != 4) 
 	{
-		printf("Usage: incorrect arg count\n\n");
+		printf("\nUsage: incorrect arg count\n\n");
 		exit(1);
 	}
 
 	/* Clears standard output */
-	system("clear");
 
 	/* Creates thread object and attributes */
  	pthread_t producerThread;
@@ -57,11 +58,20 @@ int main ( int argc, char *argv[ ] )
 	data->categoryList = categoryList;
 
 	catCount = getThreadCount( data->catFile );
+	if( catCount == 0 )
+	{
+		printf("\nNo Categories Found\n\n");
+		exit(1);
+	}
 	custCount = get_customerCount( data->customerList );
 
 	/* Start the producer thread */
 	pthread_create( &producerThread, 0, producerfnc, ( void * ) data );
 	pthread_join( producerThread, NULL );
+
+	printReport( data );
+
+	printf("\n\n");
 }
 
 /*
@@ -82,7 +92,7 @@ void * producerfnc( void *arg )
 	/* creates consumer threads */
 	for( i = 0; i < catCount; i++ )
 	{
-		threadData[i] = threadShared_init( i + 1 );
+		threadData[i] = threadShared_init( i + 1, data->customerList );
 		pthread_create( &consumerThread[i], 0, consumerfnc, (void *)threadData[i] );
 	}
 
@@ -106,23 +116,24 @@ void * producerfnc( void *arg )
 	{
 		o = order_format( line );
 		o->cat_id = getCat_id( o->category, data->categoryList );
-		
+
 		//pthread_mutex_lock( &threadData[o->cat_id]->orderLock );
 		pthread_mutex_lock(&threadData[o->cat_id]->orderLock);
-		{
+		
 			while( threadData[o->cat_id]->curCount ==  max )
 			{
-				printf("\nProducer Waiting");
+				//printf("\nProducer Waiting");
 				pthread_cond_signal( &threadData[o->cat_id]->dataAvailable );
 				pthread_cond_wait( &threadData[o->cat_id]->spaceAvailable, &threadData[o->cat_id]->orderLock );
 			}
 
-			insertOrder( o, threadData[o->cat_id]->orderList );
-			threadData[o->cat_id]->curCount += 1;
-			
-			pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
-			pthread_cond_signal( &threadData[o->cat_id]->dataAvailable );
-		}
+		insertOrder( o, threadData[o->cat_id]->orderList );
+		threadData[o->cat_id]->is_started = TRUE;
+		threadData[o->cat_id]->curCount += 1;
+		
+		pthread_mutex_unlock( &threadData[o->cat_id]->orderLock );
+		pthread_cond_signal( &threadData[o->cat_id]->dataAvailable );
+		
 
 	}
 
@@ -136,25 +147,15 @@ void * producerfnc( void *arg )
 		printf("\nNo Orders Found\n\n");
 		end(1);
 	}
+
 	for( i = 0; i < catCount; i++ )
-	{		
-//		printOrders( threadData[i]->orderList );
-		if( *(threadData[i]->orderList) == NULL )
-		{
-			printf("\ntwo");
-			threadData[i]->isdone = TRUE;
-		}
-		else
-		{
-			pthread_mutex_lock( &openLock );
-			printf("\none");
-			pthread_cond_wait( &threadData[i]->started, &openLock );
-			pthread_mutex_unlock( &openLock );
-		}
+	{
+		threadData[i]->is_started = TRUE;
 	}
 
 	file_open = FALSE;
-/*
+
+
 	int tests[ catCount ];
 
 	for( i = 0; i < catCount; i++ )
@@ -163,8 +164,8 @@ void * producerfnc( void *arg )
 	}
 
 
-	//while( checkJoined( tests ) == FALSE)
-	while(0)
+	while( checkJoined( tests ) == FALSE)
+	//while(0)
 	{
 		//printf("\nwhile");
 		for( i = 0; i < catCount; i++)
@@ -183,12 +184,10 @@ void * producerfnc( void *arg )
 				}
 			}
 		}
-
 	}
-*/
 
-
-
+	custCount = get_customerCount( data->customerList );
+	customer *customerIter = *(data->customerList);
 
 }
 
@@ -219,35 +218,90 @@ void * consumerfnc( void *arg )
 	order 			**orderList 		= 	data->orderList;
 	customer 		**customerList 		= 	data->customerList;
 
-	while( *(data->isopen) == TRUE)
+	while( data->is_started == FALSE )
 	{
-
-		currentOrder = *(data->orderList);
-		if( *(data->orderList) == NULL)
+		pthread_cond_signal( &data->spaceAvailable);
+	}
+	currentOrder = *(data->orderList);
+	while( file_open == TRUE)
+	{
+		if((pthread_mutex_trylock(&data->orderLock)) == 0)
 		{
-			continue;
+			if(currentOrder == NULL)
+			{
+				printf("\nconsumer waiting");
+			}
+			else
+			{
+				while( currentOrder->next != NULL)
+				{
+					currentCustomer = getCustomer( currentOrder->customer_id, customerList);
+					if( currentCustomer == NULL)
+					{
+						printf("\ninvalid customer, skipping order");
+					}
+					else
+					{
+						newOrder = malloc(sizeof(order));
+						(*newOrder) = (*currentOrder);
+						newOrder->next = NULL;
+
+						if( currentCustomer->balance >= currentOrder->price )
+						{			
+							newOrder->remaining_balance = currentCustomer->balance - currentOrder->price;
+							currentCustomer->balance = currentCustomer->balance - currentOrder->price;
+							totalRevenue = totalRevenue + currentOrder->price;
+							insertOrder( newOrder, currentCustomer->successful_orders );
+						}
+						else
+						{
+							newOrder->remaining_balance = -2;
+							insertOrder( newOrder, currentCustomer->failed_orders );
+						}
+					}
+					data->curCount -= 1;
+					currentOrder = currentOrder->next;
+				}
+			}
+			pthread_mutex_unlock(&data->orderLock);
 		}
-		else
-		{
-			pthread_cond_signal( &data->started );
+		pthread_cond_signal( &data->spaceAvailable);
 
-			while( currentOrder->next != NULL )
+	}
+	while( currentOrder != NULL )
+	{
+		if((pthread_mutex_trylock(&data->orderLock)) == 0)
+		{		
+			currentCustomer = getCustomer( currentOrder->customer_id, data->customerList );
+			if( currentCustomer == NULL)
+			{
+				printf("\ninvalid customer, skipping order");
+			}
+			else
 			{
 				newOrder = malloc(sizeof(order));
 				(*newOrder) = (*currentOrder);
-				currentOrder = currentOrder->next;
-				data->curCount--;
+				newOrder->next = NULL;
+
+				if( currentCustomer->balance >= currentOrder->price )
+				{
+					newOrder->remaining_balance = currentCustomer->balance - currentOrder->price;
+					currentCustomer->balance = currentCustomer->balance - currentOrder->price;
+					totalRevenue = totalRevenue + currentOrder->price;
+					insertOrder( newOrder, currentCustomer->successful_orders );
+				}
+				else
+				{
+					newOrder->remaining_balance = -2;
+					insertOrder( newOrder, currentCustomer->failed_orders );
+				}
 			}
+			data->curCount -= 1;
+			currentOrder = currentOrder->next;
+			pthread_mutex_unlock(&data->orderLock);
 		}
+		pthread_cond_signal( &data->spaceAvailable);
 	}
-
-
-	//while( 1 )
-	{	
-		//printf("\ndsf");
-
-	}
-
 
 }
 
@@ -259,6 +313,7 @@ void * consumerfnc( void *arg )
 struct shared* shared_init(  )
 {
 	shared *newShared = (shared*)malloc(sizeof(shared));
+//	newShared->customerList = customerList_init( );
 
 	return newShared; 
 }
@@ -271,7 +326,7 @@ struct order** order_init( )
 	return newQueue;
 }
 
-struct threadShared* threadShared_init( int id )
+struct threadShared* threadShared_init( int id, customer** customerList  )
 {
 	threadShared *newShared = (threadShared*)malloc(sizeof(threadShared));
 	newShared->isopen = (int*)malloc(sizeof(int));
@@ -281,14 +336,15 @@ struct threadShared* threadShared_init( int id )
 	newShared->curCount = 0;
 	newShared->id = id;
 	//newShared->started	=	FALSE;
-	newShared->isdone	=	FALSE;
+	newShared->is_joined	=	FALSE;
+	newShared->is_started	=	FALSE;
 
+	newShared->customerList = customerList;
 	newShared->orderList = order_init( );
-	newShared->customerList = customerList_init( );
+	//newShared->customerList = customerList_init( );
 
 	pthread_cond_init(&(newShared->dataAvailable), 0);
 	pthread_cond_init(&(newShared->spaceAvailable), 0);
-	pthread_cond_init(&(newShared->started), 0);
 	pthread_mutex_init( &newShared->orderLock, 0 );
 
 	return newShared;
@@ -577,16 +633,46 @@ void printOrders( order **orderList)
 		return;
 	}
 
-	printf("\ntitle: %s", (*orderList)->title );
-	printf("\n\tid: %d", (*orderList)->customer_id);
-	printf("\n\tprice: %f", (*orderList)->price);
-	printf("\n\tbal: %f", (*orderList)->remaining_balance);
-	printf("\n\tprocessed: %d", (*orderList)->isProcessed);
+	printf("\ntitle: \"");
+	printf(MAKE_BLUE"%s"RESET_FORMAT, (*orderList)->title );
+	printf("\"");
+	printf(" | $%.2f", (*orderList)->price );
+	if( (*orderList)->remaining_balance > 0 )
+	{
+		printf(" | ");
+		printf(MAKE_RED"$%.2f"RESET_FORMAT, (*orderList)->remaining_balance );
+	}
 
 	/* recursively pass the pointer to the next object in the list */	
 	printOrders( &((*orderList)->next) );
 
 }
+
+void printReport( shared *data )
+{
+	int i = 0;
+	customer *customerIter = *(data->customerList);
+
+	for( i = 0; i < custCount; i++ )
+	{
+		printf("\n=== BEGIN CUSTOMER INFO ===");
+		printf("\n### BALANCE ###");
+		printf("\nCustomer name: ");
+		printf(MAKE_UNDERLINE"%s"RESET_FORMAT, customerIter->name );
+		printf("\nCustomer ID number: %d", customerIter->id);
+		printf("\nRemaining Balance after purchases: $%.2f", customerIter->balance);
+		printf("\n### SUCCESSFUL ORDERS ###");
+		printOrders( customerIter->successful_orders );
+		printf("\n### REJECTED ORDERS ###");
+		printOrders( customerIter->failed_orders );
+		printf("\n=== END CUSTOMER INFO ===\n");
+		customerIter = customerIter->next;
+	}
+
+	printf("\n=== TOTAL REVENUE ===");
+	printf(MAKE_RED"\n$%.2f"RESET_FORMAT, totalRevenue);
+}
+
 
 /* 
 *	getCat_id	function for getting the id of a cetegory
